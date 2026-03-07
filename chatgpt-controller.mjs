@@ -161,12 +161,34 @@ export class ChatGPTController {
         return !!pickPrompt(uniq);
       })();
 
+      const modelLabel = (() => {
+        const visible = (n) => {
+          if (!n) return false;
+          const r = n.getBoundingClientRect();
+          const style = window.getComputedStyle(n);
+          return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const clean = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+        const candidates = Array.from(
+          document.querySelectorAll(
+            '[data-testid="model-switcher-dropdown-button"], button[aria-label*="model" i], button[title*="model" i]'
+          )
+        );
+        for (const n of candidates) {
+          if (!visible(n)) continue;
+          const label = clean(n.innerText || n.textContent || n.getAttribute('aria-label') || n.getAttribute('title') || '');
+          if (label) return label;
+        }
+        return '';
+      })();
+
       const blocked = hasTurnstile || hasArkose || hasVerifyButton || looks403 || (loginLike && !promptVisible);
       const kind = (hasTurnstile || hasArkose || hasVerifyButton) ? 'captcha' : (loginLike ? 'login' : (looks403 ? 'blocked' : null));
       return {
         url, title, readyState,
         blocked,
         promptVisible,
+        modelLabel,
         kind,
         indicators: { hasTurnstile, hasArkose, hasVerifyButton, looks403, loginLike }
       };

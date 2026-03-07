@@ -469,6 +469,7 @@ async function main() {
             url,
             blocked: !!challenge?.blocked,
             promptVisible: !!challenge?.promptVisible,
+            modelLabel: challenge?.modelLabel || null,
             kind: challenge?.kind || null,
             indicators: challenge?.indicators || null,
             tabs: tabs.listTabs()

@@ -68,7 +68,7 @@ test('http-api: status returns getStatus output', async (t) => {
     defaultTabId: 't0',
     serverId: 'sid-test',
     stateDir: '/tmp',
-    getStatus: async () => ({ ok: true, url: 'https://chatgpt.com/', blocked: false })
+    getStatus: async () => ({ ok: true, url: 'https://chatgpt.com/', blocked: false, modelLabel: 'ChatGPT 5.4 Thinking' })
   });
   t.after(() => server.close());
   const port = server.address().port;
@@ -77,6 +77,7 @@ test('http-api: status returns getStatus output', async (t) => {
   assert.equal(res.status, 200);
   assert.equal(data.ok, true);
   assert.equal(data.url, 'https://chatgpt.com/');
+  assert.equal(data.modelLabel, 'ChatGPT 5.4 Thinking');
 });
 
 test('http-api: status invalid tabId returns 404', async (t) => {
