@@ -276,7 +276,7 @@ export function startHttpApi({
         inflight.queries += 1;
         const controller = tabs.getControllerById(tabId);
         try {
-          const result = await runExclusive(controller, async () => controller.query({ prompt, attachments, timeoutMs }));
+          const result = await controller.query({ prompt, attachments, timeoutMs });
           return sendJson(res, 200, { ok: true, tabId, result });
         } finally {
           inflight.queries = Math.max(0, inflight.queries - 1);
@@ -293,7 +293,7 @@ export function startHttpApi({
         inflight.queries += 1;
         const controller = tabs.getControllerById(tabId);
         try {
-          const result = await runExclusive(controller, async () => controller.send({ text, timeoutMs, stopAfterSend }));
+          const result = await controller.send({ text, timeoutMs, stopAfterSend });
           return sendJson(res, 200, { ok: true, tabId, result });
         } finally {
           inflight.queries = Math.max(0, inflight.queries - 1);
@@ -305,7 +305,7 @@ export function startHttpApi({
         const maxChars = Number(body.maxChars || 0) || 200_000;
         const tabId = await resolveTab({ tabs, defaultTabId, body, url, showTabsByDefault: governor.showTabsByDefault, createIfMissing: true });
         const controller = tabs.getControllerById(tabId);
-        const text = await runExclusive(controller, async () => controller.readPageText({ maxChars }));
+        const text = await controller.readPageText({ maxChars });
         return sendJson(res, 200, { ok: true, tabId, text });
       }
 

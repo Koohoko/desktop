@@ -317,7 +317,11 @@ export class ChatGPTController {
       if (!el) return { ok:false, error:'missing_prompt_textarea' };
       el.focus();
       const r = el.getBoundingClientRect();
-      return { ok:true, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
+      let kind = 'other';
+      if (el.matches('textarea')) kind = 'textarea';
+      else if (el.matches('input')) kind = 'input';
+      else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true' || el.getAttribute('role') === 'textbox') kind = 'contenteditable';
+      return { ok:true, kind, rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
     })()`);
     if (!ok?.ok) {
       const err = new Error(ok?.error || 'type_failed');
@@ -338,7 +342,48 @@ export class ChatGPTController {
     await sleep(jitter(15, 50));
     await this.#sendKey('Backspace');
     await sleep(jitter(25, 80));
-    await this.#typeHuman(prompt);
+    // Large prompts are common for screening and can take minutes if typed
+    // character-by-character. Prefer Electron text insertion so the page sees
+    // real editor input events, and only fall back to direct DOM assignment if
+    // the composer still appears empty afterwards.
+    if (String(prompt).length > 1200) {
+      const text = String(prompt);
+      if (typeof this.webContents.insertText === 'function') {
+        await this.webContents.insertText(text);
+        await sleep(jitter(60, 140));
+      }
+      const insertedLen = await this.#eval(`(() => {
+        const ae = document.activeElement;
+        if (!ae) return -1;
+        if (ae.matches?.('textarea, input')) return String(ae.value || '').trim().length;
+        if (ae.isContentEditable || ae.getAttribute?.('contenteditable') === 'true' || ae.getAttribute?.('role') === 'textbox') {
+          return String(ae.innerText || ae.textContent || '').trim().length;
+        }
+        return -1;
+      })()`);
+      if (!(Number(insertedLen) > 0)) {
+        const promptJson = JSON.stringify(text);
+        await this.#eval(`(() => {
+          const value = ${promptJson};
+          const ae = document.activeElement;
+          if (!ae) return false;
+          if (ae.matches?.('textarea, input')) {
+            ae.value = value;
+            ae.dispatchEvent(new Event('input', { bubbles: true }));
+            ae.dispatchEvent(new Event('change', { bubbles: true }));
+            return true;
+          }
+          if (ae.isContentEditable || ae.getAttribute?.('contenteditable') === 'true' || ae.getAttribute?.('role') === 'textbox') {
+            ae.textContent = value;
+            ae.dispatchEvent(new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' }));
+            return true;
+          }
+          return false;
+        })()`);
+      }
+    } else {
+      await this.#typeHuman(prompt);
+    }
   }
 
   async #waitForSendSignal({ timeoutMs = 1800, pollMs = 120 } = {}) {
@@ -355,9 +400,6 @@ export class ChatGPTController {
           return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
         };
         const stopVisible = Array.from(document.querySelectorAll(${stopSel})).some(visible);
-        const send = Array.from(document.querySelectorAll(${sendSel})).find(visible);
-        const sendDisabled = !!send && !!send.disabled;
-
         const promptCandidates = Array.from(document.querySelectorAll(${promptSel}));
         const fallback = Array.from(document.querySelectorAll('main textarea, main [role=\"textbox\"], main [contenteditable=\"true\"], textarea, [role=\"textbox\"], [contenteditable=\"true\"]'));
         const uniq = [];
@@ -371,18 +413,17 @@ export class ChatGPTController {
         for (const n of uniq) {
           if (!visible(n)) continue;
           if (n.matches('textarea, input')) {
-            promptLen = String(n.value || '').trim().length;
-            break;
+            promptLen = Math.max(promptLen, String(n.value || '').trim().length);
+            continue;
           }
           if (n.isContentEditable || n.getAttribute('contenteditable') === 'true' || n.getAttribute('role') === 'textbox') {
-            promptLen = String(n.innerText || n.textContent || '').trim().length;
-            break;
+            promptLen = Math.max(promptLen, String(n.innerText || n.textContent || '').trim().length);
           }
         }
-        return { stopVisible, sendDisabled, promptLen };
+        return { stopVisible, promptLen };
       })()`);
 
-      if (snap?.stopVisible || snap?.sendDisabled || snap?.promptLen === 0) return true;
+      if (snap?.stopVisible || snap?.promptLen === 0) return true;
       await sleep(pollMs);
     }
     return false;
@@ -588,7 +629,27 @@ export class ChatGPTController {
         const hasContinue = Array.from(document.querySelectorAll('button, a')).some(b => /continue generating/i.test((b.textContent||'').trim()));
         const hasRegenerate = Array.from(document.querySelectorAll('button, a')).some(b => /regenerate/i.test((b.textContent||'').trim()));
         const hasError = /something went wrong|try again|error/i.test(txt) && txt.length < 500;
-        return { stop, sendEnabled, txt, count: nodes.length, usedFallback: !lastNode, hasError, hasContinue, hasRegenerate };
+        const broadNodes = Array.from(document.querySelectorAll('article, [data-testid], [data-message-author-role], [class*=\"assistant\" i], [class*=\"message\" i]'));
+        const summarize = (n) => ({
+          tag: n.tagName,
+          testid: n.getAttribute('data-testid') || '',
+          author: n.getAttribute('data-message-author-role') || '',
+          cls: String(n.className || '').slice(0, 160),
+          text: String(n.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 160)
+        });
+        return {
+          stop,
+          sendEnabled,
+          txt,
+          count: nodes.length,
+          usedFallback: !lastNode,
+          hasError,
+          hasContinue,
+          hasRegenerate,
+          broadCount: broadNodes.length,
+          broadTail: broadNodes.slice(-8).map(summarize),
+          url: location.href || ''
+        };
       })()`);
 
       const txt = String(snap?.txt || '');
@@ -618,8 +679,7 @@ export class ChatGPTController {
       }
 
       const readyByNodes = (snap?.count || 0) > 0;
-      const fallbackWaited = !!snap?.usedFallback && (Date.now() - start >= 2500);
-      const done = !generating && stopGoneLongEnough && snap?.sendEnabled && stable && txt.length > 0 && (readyByNodes || fallbackWaited);
+      const done = !generating && stopGoneLongEnough && snap?.sendEnabled && stable && txt.length > 0 && readyByNodes;
       if (done) {
         const extra = await this.#eval(`(() => {
           const nodes = Array.from(document.querySelectorAll(${assistantSel}));
@@ -636,6 +696,28 @@ export class ChatGPTController {
 
       await sleep(pollMs);
     }
+
+    try {
+      const dbg = await this.#eval(`(() => {
+        const broadNodes = Array.from(document.querySelectorAll('article, [data-testid], [data-message-author-role], [class*=\"assistant\" i], [class*=\"message\" i]'));
+        const summarize = (n) => ({
+          tag: n.tagName,
+          testid: n.getAttribute('data-testid') || '',
+          author: n.getAttribute('data-message-author-role') || '',
+          cls: String(n.className || '').slice(0, 160),
+          text: String(n.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 160)
+        });
+        const root = document.querySelector('main') || document.body;
+        const txt = String(root?.innerText || '').replace(/\\s+/g, ' ').trim();
+        return {
+          url: location.href || '',
+          broadCount: broadNodes.length,
+          broadTail: broadNodes.slice(-8).map(summarize),
+          txtTail: txt.slice(-400)
+        };
+      })()`);
+      console.warn('[agentify][waitForAssistantStable][timeout]', JSON.stringify(dbg || {}));
+    } catch {}
 
     const err = new Error('timeout_waiting_for_response');
     err.data = { last };

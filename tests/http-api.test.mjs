@@ -298,7 +298,7 @@ test('http-api: show creates missing key tab (and hide does not)', async (t) => 
   assert.deepEqual(hidden.includes('tab-projA'), true);
 });
 
-test('http-api: operations run through controller.runExclusive when available', async (t) => {
+test('http-api: only non-self-locking controller operations use runExclusive', async (t) => {
   let inExclusive = false;
   const calls = [];
   const controller = {
@@ -321,12 +321,17 @@ test('http-api: operations run through controller.runExclusive when available', 
       return { ok: true };
     },
     query: async () => {
-      assert.equal(inExclusive, true);
+      assert.equal(inExclusive, false);
       calls.push('query');
       return { text: 'ok' };
     },
+    send: async () => {
+      assert.equal(inExclusive, false);
+      calls.push('send');
+      return { ok: true };
+    },
     readPageText: async () => {
-      assert.equal(inExclusive, true);
+      assert.equal(inExclusive, false);
       calls.push('readPageText');
       return 'page';
     },
@@ -360,10 +365,11 @@ test('http-api: operations run through controller.runExclusive when available', 
   await req({ port, token: 'secret', method: 'POST', pth: '/navigate', body: { url: 'https://chatgpt.com/' } });
   await req({ port, token: 'secret', method: 'POST', pth: '/ensure-ready', body: { timeoutMs: 1000 } });
   await req({ port, token: 'secret', method: 'POST', pth: '/query', body: { prompt: 'hi' } });
+  await req({ port, token: 'secret', method: 'POST', pth: '/send', body: { text: 'hi' } });
   await req({ port, token: 'secret', method: 'POST', pth: '/read-page', body: { maxChars: 10 } });
   await req({ port, token: 'secret', method: 'POST', pth: '/download-images', body: { maxImages: 1 } });
 
-  assert.deepEqual(calls, ['navigate', 'ensureReady', 'query', 'readPageText', 'downloadLastAssistantImages']);
+  assert.deepEqual(calls, ['navigate', 'ensureReady', 'query', 'send', 'readPageText', 'downloadLastAssistantImages']);
 });
 
 test('http-api: ensure-ready timeout maps to 408 with details', async (t) => {
