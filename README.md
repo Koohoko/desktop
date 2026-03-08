@@ -1,6 +1,10 @@
-# Agentify Desktop
+# Desktop (Personal Fork)
 
-Agentify Desktop is a local-first control center for AI work: connect your real, logged-in AI subscriptions to your MCP-compatible CLI tools, all on your own machine.
+This repository is Haogao's self-modified personal fork of the upstream Agentify Desktop project.
+
+Its main purpose is to support personal research and engineering workflows where logged-in LLM web apps are used as decision-support helpers: planning, comparison, triage, structured thinking, and execution support on a local machine.
+
+It is not an official upstream release. It is a derivative that stays compatible with the upstream MCP/browser-control model while prioritizing personal workflow needs first.
 
 ### Why teams keep it open
 - `🌐` **Real browser sessions, real accounts**: automate the web UIs you already use, without API-key migration.
@@ -31,7 +35,7 @@ Agentify Desktop does **not** attempt to bypass CAPTCHAs or use third-party solv
 Quickstart installs dependencies, auto-registers the MCP server for installed clients (Codex/Claude Code/OpenCode), and starts Agentify Desktop:
 
 ```bash
-git clone git@github.com:agentify-sh/desktop.git
+git clone git@github.com:Koohoko/desktop.git
 cd desktop
 ./scripts/quickstart.sh
 ```
@@ -250,4 +254,4 @@ Artifacts land in `dist/`.
 See `SECURITY.md`.
 
 ## Trademarks
-Forks/derivatives may not use Agentify branding. See `TRADEMARKS.md`.
+This fork is derived from Agentify Desktop but is not an official Agentify distribution. Forks/derivatives may not use Agentify branding. See `TRADEMARKS.md`.
