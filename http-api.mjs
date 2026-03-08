@@ -73,6 +73,26 @@ function envShowTabsDefault() {
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
 }
 
+function bindRequestAbort(req, res) {
+  const ac = new AbortController();
+  const abort = () => {
+    if (!ac.signal.aborted) ac.abort();
+  };
+  req.once('aborted', abort);
+  req.once('close', abort);
+  req.socket?.once?.('close', abort);
+  res.once('close', abort);
+  return {
+    signal: ac.signal,
+    cleanup() {
+      req.off('aborted', abort);
+      req.off('close', abort);
+      req.socket?.off?.('close', abort);
+      res.off('close', abort);
+    }
+  };
+}
+
 async function runExclusive(controller, fn) {
   if (controller && typeof controller.runExclusive === 'function') return await controller.runExclusive(fn);
   return await fn();
@@ -275,10 +295,13 @@ export function startHttpApi({
         checkAndConsumeQueryBudget({ tabId, governor });
         inflight.queries += 1;
         const controller = tabs.getControllerById(tabId);
+        const abortCtx = bindRequestAbort(req, res);
         try {
-          const result = await controller.query({ prompt, attachments, timeoutMs });
+          const result = await controller.query({ prompt, attachments, timeoutMs, signal: abortCtx.signal });
+          if (abortCtx.signal.aborted || res.destroyed || req.aborted) return;
           return sendJson(res, 200, { ok: true, tabId, result });
         } finally {
+          abortCtx.cleanup();
           inflight.queries = Math.max(0, inflight.queries - 1);
         }
       }
@@ -292,10 +315,13 @@ export function startHttpApi({
         checkAndConsumeQueryBudget({ tabId, governor });
         inflight.queries += 1;
         const controller = tabs.getControllerById(tabId);
+        const abortCtx = bindRequestAbort(req, res);
         try {
-          const result = await controller.send({ text, timeoutMs, stopAfterSend });
+          const result = await controller.send({ text, timeoutMs, stopAfterSend, signal: abortCtx.signal });
+          if (abortCtx.signal.aborted || res.destroyed || req.aborted) return;
           return sendJson(res, 200, { ok: true, tabId, result });
         } finally {
+          abortCtx.cleanup();
           inflight.queries = Math.max(0, inflight.queries - 1);
         }
       }
@@ -320,6 +346,7 @@ export function startHttpApi({
 
       return sendJson(res, 404, { error: 'not_found' });
     } catch (error) {
+      if (String(error?.message || '') === 'request_aborted' && (req.aborted || res.destroyed)) return;
       const mapped = mapErrorToHttp(error);
       if (mapped) return sendJson(res, mapped.code, mapped.body);
       return sendJson(res, 500, { error: 'internal_error', message: error?.message || String(error), data: error?.data || null });

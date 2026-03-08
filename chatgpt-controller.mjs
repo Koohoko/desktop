@@ -5,14 +5,41 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function abortError() {
+  const err = new Error('request_aborted');
+  err.data = { reason: 'client_disconnect' };
+  return err;
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortError();
+}
+
+function sleepAbortable(ms, signal) {
+  throwIfAborted(signal);
+  if (!signal) return sleep(ms);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      reject(abortError());
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 function jitter(minMs, maxMs) {
   const min = Math.max(0, Number(minMs) || 0);
   const max = Math.max(min, Number(maxMs) || 0);
   return Math.floor(min + Math.random() * (max - min + 1));
 }
 
-async function sleepWithJitter(ms, j = 40) {
-  await sleep(ms + jitter(0, j));
+async function sleepWithJitter(ms, j = 40, signal) {
+  await sleepAbortable(ms + jitter(0, j), signal);
 }
 
 class Mutex {
@@ -197,9 +224,10 @@ export class ChatGPTController {
     return result;
   }
 
-  async waitForPromptVisible({ timeoutMs = 10 * 60_000, pollMs = 500 } = {}) {
+  async waitForPromptVisible({ timeoutMs = 10 * 60_000, pollMs = 500, signal } = {}) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+      throwIfAborted(signal);
       const st = await this.detectChallenge().catch(() => null);
       if (st?.blocked) await this.#enterBlockedState(st);
       if (st?.promptVisible) return st;
@@ -208,7 +236,7 @@ export class ChatGPTController {
       if (!this.blocked && elapsed > 5000 && st?.readyState === 'complete') {
         await this.#enterBlockedState({ ...(st || {}), blocked: true, kind: 'ui' });
       }
-      await sleep(pollMs);
+      await sleepAbortable(pollMs, signal);
     }
     const last = await this.detectChallenge().catch(() => null);
     const err = new Error('timeout_waiting_for_prompt');
@@ -216,12 +244,13 @@ export class ChatGPTController {
     throw err;
   }
 
-  async ensureReady({ timeoutMs = 10 * 60_000 } = {}) {
+  async ensureReady({ timeoutMs = 10 * 60_000, signal } = {}) {
+    throwIfAborted(signal);
     const st = await this.detectChallenge().catch(() => null);
     if (st?.blocked) {
       await this.#enterBlockedState(st);
     }
-    const ready = await this.waitForPromptVisible({ timeoutMs });
+    const ready = await this.waitForPromptVisible({ timeoutMs, signal });
     await this.#exitBlockedStateIfNeeded();
     return ready;
   }
@@ -253,37 +282,40 @@ export class ChatGPTController {
     wc.sendInputEvent({ type: 'keyUp', keyCode: key, modifiers });
   }
 
-  async #typeHuman(text) {
+  async #typeHuman(text, { signal } = {}) {
     const wc = this.webContents;
     for (const ch of String(text)) {
+      throwIfAborted(signal);
       wc.sendInputEvent({ type: 'char', keyCode: ch });
-      await sleep(jitter(12, 45));
+      await sleepAbortable(jitter(12, 45), signal);
     }
   }
 
-  async #moveMouseTo(x, y) {
+  async #moveMouseTo(x, y, { signal } = {}) {
     const wc = this.webContents;
     const from = { ...this.mouse };
     const steps = Math.max(6, Math.min(22, Math.floor(Math.hypot(x - from.x, y - from.y) / 35)));
     for (let i = 1; i <= steps; i++) {
+      throwIfAborted(signal);
       const t = i / steps;
       const nx = Math.round(from.x + (x - from.x) * t + jitter(-2, 2));
       const ny = Math.round(from.y + (y - from.y) * t + jitter(-2, 2));
       wc.sendInputEvent({ type: 'mouseMove', x: nx, y: ny, movementX: 0, movementY: 0 });
-      await sleep(jitter(6, 18));
+      await sleepAbortable(jitter(6, 18), signal);
       this.mouse = { x: nx, y: ny };
     }
   }
 
-  async #clickAt(x, y) {
+  async #clickAt(x, y, { signal } = {}) {
     const wc = this.webContents;
-    await this.#moveMouseTo(x, y);
+    await this.#moveMouseTo(x, y, { signal });
     wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-    await sleep(jitter(20, 60));
+    await sleepAbortable(jitter(20, 60), signal);
     wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
   }
 
-  async #typePrompt(prompt) {
+  async #typePrompt(prompt, { signal } = {}) {
+    throwIfAborted(signal);
     const sel = JSON.stringify(this.selectors.promptTextarea);
     const ok = await this.#eval(`(() => {
       const visible = (n) => {
@@ -355,15 +387,15 @@ export class ChatGPTController {
     if (ok?.rect?.w > 0 && ok?.rect?.h > 0) {
       const cx = Math.round(ok.rect.x + Math.min(ok.rect.w - 6, 18));
       const cy = Math.round(ok.rect.y + Math.min(ok.rect.h - 6, 18));
-      await this.#clickAt(cx, cy);
+      await this.#clickAt(cx, cy, { signal });
     }
 
     const isMac = process.platform === 'darwin';
-    await sleep(jitter(25, 80));
+    await sleepAbortable(jitter(25, 80), signal);
     await this.#sendKey('A', { modifiers: [isMac ? 'meta' : 'control'] });
-    await sleep(jitter(15, 50));
+    await sleepAbortable(jitter(15, 50), signal);
     await this.#sendKey('Backspace');
-    await sleep(jitter(25, 80));
+    await sleepAbortable(jitter(25, 80), signal);
     // Large prompts are common for screening and can take minutes if typed
     // character-by-character. Prefer Electron text insertion so the page sees
     // real editor input events, and only fall back to direct DOM assignment if
@@ -371,8 +403,9 @@ export class ChatGPTController {
     if (String(prompt).length > 1200) {
       const text = String(prompt);
       if (typeof this.webContents.insertText === 'function') {
+        throwIfAborted(signal);
         await this.webContents.insertText(text);
-        await sleep(jitter(60, 140));
+        await sleepAbortable(jitter(60, 140), signal);
       }
       const insertedLen = await this.#eval(`(() => {
         const ae = document.activeElement;
@@ -404,16 +437,17 @@ export class ChatGPTController {
         })()`);
       }
     } else {
-      await this.#typeHuman(prompt);
+      await this.#typeHuman(prompt, { signal });
     }
   }
 
-  async #waitForSendSignal({ timeoutMs = 1800, pollMs = 120 } = {}) {
+  async #waitForSendSignal({ timeoutMs = 1800, pollMs = 120, signal } = {}) {
     const stopSel = JSON.stringify(this.selectors.stopButton);
     const sendSel = JSON.stringify(this.selectors.sendButton);
     const promptSel = JSON.stringify(this.selectors.promptTextarea);
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+      throwIfAborted(signal);
       const snap = await this.#eval(`(() => {
         const visible = (n) => {
           if (!n) return false;
@@ -448,12 +482,13 @@ export class ChatGPTController {
       })()`);
 
       if (snap?.stopVisible || snap?.sendDisabled || snap?.promptLen === 0) return true;
-      await sleep(pollMs);
+      await sleepAbortable(pollMs, signal);
     }
     return false;
   }
 
-  async #clickSend() {
+  async #clickSend({ signal } = {}) {
+    throwIfAborted(signal);
     const sendSel = JSON.stringify(this.selectors.sendButton);
     const stopSel = JSON.stringify(this.selectors.stopButton);
     const res = await this.#eval(`(() => {
@@ -524,13 +559,13 @@ export class ChatGPTController {
     if (res?.rect?.w > 0 && res?.rect?.h > 0) {
       const cx = Math.round(res.rect.x + res.rect.w / 2);
       const cy = Math.round(res.rect.y + res.rect.h / 2);
-      await this.#clickAt(cx, cy);
-      sent = await this.#waitForSendSignal({ timeoutMs: 2200, pollMs: 120 });
+      await this.#clickAt(cx, cy, { signal });
+      sent = await this.#waitForSendSignal({ timeoutMs: 2200, pollMs: 120, signal });
     }
 
     if (!sent && !res?.fallbackEnter) {
       await this.#eval(`(() => { const btn = document.querySelector(${sendSel}); if (btn) btn.click(); })()`);
-      sent = await this.#waitForSendSignal({ timeoutMs: 1400, pollMs: 120 });
+      sent = await this.#waitForSendSignal({ timeoutMs: 1400, pollMs: 120, signal });
     }
 
     if (!sent) {
@@ -551,9 +586,9 @@ export class ChatGPTController {
       }
 
       for (const [key, modifiers] of combos) {
-        await sleep(jitter(25, 90));
+        await sleepAbortable(jitter(25, 90), signal);
         await this.#sendKey(key, { modifiers });
-        sent = await this.#waitForSendSignal({ timeoutMs: 1500, pollMs: 120 });
+        sent = await this.#waitForSendSignal({ timeoutMs: 1500, pollMs: 120, signal });
         if (sent) break;
       }
     }
@@ -565,8 +600,9 @@ export class ChatGPTController {
     }
   }
 
-  async #attachFiles(files) {
+  async #attachFiles(files, { signal } = {}) {
     if (!files?.length) return;
+    throwIfAborted(signal);
     const absFiles = files.map((p) => path.resolve(p));
     for (const f of absFiles) await fs.access(f);
 
@@ -592,12 +628,13 @@ export class ChatGPTController {
     try {
       let lastNodeIds = [];
       for (let attempt = 0; attempt < 10; attempt++) {
+        throwIfAborted(signal);
         const { root } = await wc.debugger.sendCommand('DOM.getDocument', { depth: 12, pierce: true });
         const q = await wc.debugger.sendCommand('DOM.querySelectorAll', { nodeId: root.nodeId, selector: 'input[type="file"]' });
         const nodeIds = Array.isArray(q?.nodeIds) ? q.nodeIds : [];
         lastNodeIds = nodeIds;
         if (!nodeIds.length) {
-          await sleepWithJitter(180);
+          await sleepWithJitter(180, 40, signal);
           continue;
         }
 
@@ -614,7 +651,7 @@ export class ChatGPTController {
           }
         }
         if (!lastErr) return;
-        await sleepWithJitter(180);
+        await sleepWithJitter(180, 40, signal);
       }
 
       const err = new Error('missing_file_input');
@@ -627,7 +664,7 @@ export class ChatGPTController {
     }
   }
 
-  async #waitForAssistantStable({ timeoutMs = 5 * 60_000, stableMs = 1500, pollMs = 400 } = {}) {
+  async #waitForAssistantStable({ timeoutMs = 5 * 60_000, stableMs = 1500, pollMs = 400, signal } = {}) {
     const assistantSel = JSON.stringify(this.selectors.assistantMessage);
     const stopSel = JSON.stringify(this.selectors.stopButton);
     const sendSel = JSON.stringify(this.selectors.sendButton);
@@ -640,6 +677,7 @@ export class ChatGPTController {
     let sawGenerationLifecycle = false;
 
     while (Date.now() - start < timeoutMs) {
+      throwIfAborted(signal);
       const snap = await this.#eval(`(() => {
         const stop = !!document.querySelector(${stopSel});
         const send = Array.from(document.querySelectorAll(${sendSel})).find((n) => {
@@ -717,7 +755,7 @@ export class ChatGPTController {
           const btn = Array.from(document.querySelectorAll('button, a')).find(b => /continue generating/i.test((b.textContent||'').trim()));
           if (btn) btn.click();
         })()`);
-        await sleep(250);
+        await sleepAbortable(250, signal);
         continue;
       }
 
@@ -746,7 +784,7 @@ export class ChatGPTController {
         return { text: txt, codeBlocks: extra?.codeBlocks || [], meta: { count: snap?.count || 0, hasError: !!snap?.hasError } };
       }
 
-      await sleep(pollMs);
+      await sleepAbortable(pollMs, signal);
     }
 
     try {
@@ -776,40 +814,41 @@ export class ChatGPTController {
     throw err;
   }
 
-  async query({ prompt, attachments = [], timeoutMs = 10 * 60_000 } = {}) {
+  async query({ prompt, attachments = [], timeoutMs = 10 * 60_000, signal } = {}) {
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('missing_prompt');
     if (prompt.length > 200_000) throw new Error('prompt_too_large');
 
     return await this.mutex.run(async () => {
-      await this.ensureReady({ timeoutMs });
-      await this.#attachFiles(attachments);
-      await this.#typePrompt(prompt);
-      await this.#clickSend();
-      return await this.#waitForAssistantStable({ timeoutMs: Math.min(timeoutMs, 8 * 60_000) });
+      await this.ensureReady({ timeoutMs, signal });
+      await this.#attachFiles(attachments, { signal });
+      await this.#typePrompt(prompt, { signal });
+      await this.#clickSend({ signal });
+      return await this.#waitForAssistantStable({ timeoutMs: Math.min(timeoutMs, 8 * 60_000), signal });
     });
   }
 
-  async send({ text, timeoutMs = 3 * 60_000, stopAfterSend = false } = {}) {
+  async send({ text, timeoutMs = 3 * 60_000, stopAfterSend = false, signal } = {}) {
     const prompt = String(text || '');
     if (!prompt.trim()) throw new Error('missing_prompt');
     if (prompt.length > 200_000) throw new Error('prompt_too_large');
 
     return await this.mutex.run(async () => {
-      await this.ensureReady({ timeoutMs });
-      await this.#typePrompt(prompt);
-      await this.#clickSend();
+      await this.ensureReady({ timeoutMs, signal });
+      await this.#typePrompt(prompt, { signal });
+      await this.#clickSend({ signal });
 
       if (stopAfterSend) {
         const stopSel = JSON.stringify(this.selectors.stopButton);
         const start = Date.now();
         while (Date.now() - start < 2500) {
+          throwIfAborted(signal);
           const clicked = await this.#eval(`(() => {
             const stop = document.querySelector(${stopSel});
             if (!stop) return false;
             try { stop.click(); return true; } catch { return false; }
           })()`);
           if (clicked) break;
-          await sleep(120);
+          await sleepAbortable(120, signal);
         }
       }
 

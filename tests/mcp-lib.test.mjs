@@ -59,6 +59,30 @@ test('mcp-lib: requestJson throws with status and body', async () => {
   );
 });
 
+test('mcp-lib: requestJson forwards abort signal to fetch', async () => {
+  let seenSignal = null;
+  const ac = new AbortController();
+  const fetchImpl = async (_url, opts = {}) => {
+    seenSignal = opts.signal || null;
+    return await new Promise((resolve, reject) => {
+      const onAbort = () => {
+        seenSignal?.removeEventListener?.('abort', onAbort);
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      };
+      if (seenSignal?.aborted) return onAbort();
+      seenSignal?.addEventListener?.('abort', onAbort, { once: true });
+    });
+  };
+
+  const pending = requestJson({ baseUrl: 'http://x', token: 't', method: 'GET', path: '/status', signal: ac.signal, fetchImpl });
+  ac.abort();
+
+  await assert.rejects(pending, (err) => err?.name === 'AbortError');
+  assert.equal(seenSignal, ac.signal);
+});
+
 test('mcp-lib: ensureDesktopRunning uses existing connection when serverId matches', async () => {
   const dir = await tempDir();
   await ensureToken(dir);

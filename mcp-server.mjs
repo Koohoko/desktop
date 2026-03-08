@@ -32,14 +32,15 @@ registerTool(
       timeoutMs: z.number().optional().describe('Maximum time to wait for completion.')
     }
   },
-  async ({ model, tabId, key, prompt, attachments, timeoutMs }) => {
+  async ({ model, tabId, key, prompt, attachments, timeoutMs }, extra) => {
     void model;
     const conn = await getConn();
     const data = await requestJson({
       ...conn,
       method: 'POST',
       path: '/query',
-      body: { tabId, key, prompt, attachments: attachments || [], timeoutMs: timeoutMs || 10 * 60_000 }
+      body: { tabId, key, prompt, attachments: attachments || [], timeoutMs: timeoutMs || 10 * 60_000 },
+      signal: extra.signal
     });
     const structuredContent = {
       text: data.result?.text || '',
@@ -63,13 +64,14 @@ registerTool(
       maxChars: z.number().optional().describe('Maximum characters to return.')
     }
   },
-  async ({ tabId, key, maxChars }) => {
+  async ({ tabId, key, maxChars }, extra) => {
     const conn = await getConn();
     const data = await requestJson({
       ...conn,
       method: 'POST',
       path: '/read-page',
-      body: { tabId, key, maxChars: maxChars || 200_000 }
+      body: { tabId, key, maxChars: maxChars || 200_000 },
+      signal: extra.signal
     });
     return { content: [{ type: 'text', text: data.text || '' }] };
   }
@@ -85,9 +87,9 @@ registerTool(
       url: z.string().describe('URL to navigate to.')
     }
   },
-  async ({ tabId, key, url }) => {
+  async ({ tabId, key, url }, extra) => {
     const conn = await getConn();
-    const data = await requestJson({ ...conn, method: 'POST', path: '/navigate', body: { tabId, key, url } });
+    const data = await requestJson({ ...conn, method: 'POST', path: '/navigate', body: { tabId, key, url }, signal: extra.signal });
     return { content: [{ type: 'text', text: data.url || 'ok' }], structuredContent: data };
   }
 );
@@ -103,13 +105,14 @@ registerTool(
       timeoutMs: z.number().optional().describe('Maximum time to wait for readiness.')
     }
   },
-  async ({ tabId, key, timeoutMs }) => {
+  async ({ tabId, key, timeoutMs }, extra) => {
     const conn = await getConn();
     const data = await requestJson({
       ...conn,
       method: 'POST',
       path: '/ensure-ready',
-      body: { tabId, key, timeoutMs: timeoutMs || 10 * 60_000 }
+      body: { tabId, key, timeoutMs: timeoutMs || 10 * 60_000 },
+      signal: extra.signal
     });
     return { content: [{ type: 'text', text: JSON.stringify(data.state || {}, null, 2) }], structuredContent: data };
   }
@@ -118,9 +121,9 @@ registerTool(
 registerTool(
   'agentify_show',
   { description: 'Bring the Agentify Desktop window to the front.', inputSchema: { tabId: z.string().optional(), key: z.string().optional() } },
-  async ({ tabId, key }) => {
+  async ({ tabId, key }, extra) => {
     const conn = await getConn();
-    await requestJson({ ...conn, method: 'POST', path: '/show', body: { tabId, key } });
+    await requestJson({ ...conn, method: 'POST', path: '/show', body: { tabId, key }, signal: extra.signal });
     return { content: [{ type: 'text', text: 'ok' }] };
   }
 );
@@ -128,9 +131,9 @@ registerTool(
 registerTool(
   'agentify_hide',
   { description: 'Minimize the Agentify Desktop window.', inputSchema: { tabId: z.string().optional(), key: z.string().optional() } },
-  async ({ tabId, key }) => {
+  async ({ tabId, key }, extra) => {
     const conn = await getConn();
-    await requestJson({ ...conn, method: 'POST', path: '/hide', body: { tabId, key } });
+    await requestJson({ ...conn, method: 'POST', path: '/hide', body: { tabId, key }, signal: extra.signal });
     return { content: [{ type: 'text', text: 'ok' }] };
   }
 );
@@ -138,10 +141,10 @@ registerTool(
 registerTool(
   'agentify_status',
   { description: 'Get current URL, blocked/ready state, and visible model label for the Agentify Desktop window.', inputSchema: { tabId: z.string().optional() } },
-  async ({ tabId }) => {
+  async ({ tabId }, extra) => {
     const conn = await getConn();
     const path = tabId ? `/status?tabId=${encodeURIComponent(tabId)}` : '/status';
-    const data = await requestJson({ ...conn, method: 'GET', path });
+    const data = await requestJson({ ...conn, method: 'GET', path, signal: extra.signal });
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data };
   }
 );
@@ -159,19 +162,21 @@ registerTool(
       maxImages: z.number().optional().describe('Maximum images to download.')
     }
   },
-  async ({ tabId, key, prompt, timeoutMs, maxImages }) => {
+  async ({ tabId, key, prompt, timeoutMs, maxImages }, extra) => {
     const conn = await getConn();
     const q = await requestJson({
       ...conn,
       method: 'POST',
       path: '/query',
-      body: { tabId, key, prompt, attachments: [], timeoutMs: timeoutMs || 10 * 60_000 }
+      body: { tabId, key, prompt, attachments: [], timeoutMs: timeoutMs || 10 * 60_000 },
+      signal: extra.signal
     });
     const d = await requestJson({
       ...conn,
       method: 'POST',
       path: '/download-images',
-      body: { tabId: q.tabId || tabId, maxImages: maxImages || 6 }
+      body: { tabId: q.tabId || tabId, maxImages: maxImages || 6 },
+      signal: extra.signal
     });
     const structuredContent = { text: q.result?.text || '', files: d.files || [] };
     return {
@@ -192,9 +197,9 @@ registerTool(
       maxImages: z.number().optional().describe('Maximum images to download.')
     }
   },
-  async ({ tabId, key, maxImages }) => {
+  async ({ tabId, key, maxImages }, extra) => {
     const conn = await getConn();
-    const d = await requestJson({ ...conn, method: 'POST', path: '/download-images', body: { tabId, key, maxImages: maxImages || 6 } });
+    const d = await requestJson({ ...conn, method: 'POST', path: '/download-images', body: { tabId, key, maxImages: maxImages || 6 }, signal: extra.signal });
     const structuredContent = { files: d.files || [] };
     return {
       content: [{ type: 'text', text: JSON.stringify(structuredContent, null, 2) }],
@@ -206,9 +211,9 @@ registerTool(
 registerTool(
   'agentify_tabs',
   { description: 'List current tabs/sessions (for parallel jobs).', inputSchema: {} },
-  async () => {
+  async (_args, extra) => {
     const conn = await getConn();
-    const data = await requestJson({ ...conn, method: 'GET', path: '/tabs' });
+    const data = await requestJson({ ...conn, method: 'GET', path: '/tabs', signal: extra.signal });
     return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }], structuredContent: data };
   }
 );
@@ -219,13 +224,14 @@ registerTool(
     description: 'Create (or ensure) a tab/session for a given key.',
     inputSchema: { key: z.string().optional(), name: z.string().optional(), show: z.boolean().optional().describe('Show the tab window immediately.') }
   },
-  async ({ key, name, show }) => {
+  async ({ key, name, show }, extra) => {
     const conn = await getConn();
     const data = await requestJson({
       ...conn,
       method: 'POST',
       path: '/tabs/create',
-      body: { key, name, show: typeof show === 'boolean' ? show : undefined }
+      body: { key, name, show: typeof show === 'boolean' ? show : undefined },
+      signal: extra.signal
     });
     return { content: [{ type: 'text', text: data.tabId || '' }], structuredContent: data };
   }
@@ -234,25 +240,25 @@ registerTool(
 registerTool(
   'agentify_tab_close',
   { description: 'Close a tab/session by tabId.', inputSchema: { tabId: z.string().describe('Tab id to close.') } },
-  async ({ tabId }) => {
+  async ({ tabId }, extra) => {
     const conn = await getConn();
-    const data = await requestJson({ ...conn, method: 'POST', path: '/tabs/close', body: { tabId } });
+    const data = await requestJson({ ...conn, method: 'POST', path: '/tabs/close', body: { tabId }, signal: extra.signal });
     return { content: [{ type: 'text', text: 'ok' }], structuredContent: data };
   }
 );
 
-registerTool('agentify_shutdown', { description: 'Gracefully shut down the Agentify Desktop app.', inputSchema: {} }, async () => {
+registerTool('agentify_shutdown', { description: 'Gracefully shut down the Agentify Desktop app.', inputSchema: {} }, async (_args, extra) => {
   const conn = await getConn();
-  await requestJson({ ...conn, method: 'POST', path: '/shutdown', body: { scope: 'app' } });
+  await requestJson({ ...conn, method: 'POST', path: '/shutdown', body: { scope: 'app' }, signal: extra.signal });
   return { content: [{ type: 'text', text: 'ok' }] };
 });
 
 registerTool(
   'agentify_rotate_token',
   { description: 'Rotate the local HTTP API bearer token (requires reconnect on subsequent calls).', inputSchema: {} },
-  async () => {
+  async (_args, extra) => {
     const conn = await getConn();
-    await requestJson({ ...conn, method: 'POST', path: '/rotate-token' });
+    await requestJson({ ...conn, method: 'POST', path: '/rotate-token', signal: extra.signal });
     return { content: [{ type: 'text', text: 'ok' }] };
   }
 );

@@ -21,3 +21,9 @@ test('mcp-server documents model label in agentify_status', async () => {
   const src = await fs.readFile(path.join(__dirname, '..', 'mcp-server.mjs'), 'utf8');
   assert.match(src, /model label/i);
 });
+
+test('mcp-server forwards MCP cancellation signal to local HTTP requests', async () => {
+  const src = await fs.readFile(path.join(__dirname, '..', 'mcp-server.mjs'), 'utf8');
+  assert.match(src, /async \(\{ model, tabId, key, prompt, attachments, timeoutMs \}, extra\) =>/);
+  assert.match(src, /signal:\s*extra\.signal/);
+});

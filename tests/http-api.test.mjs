@@ -456,6 +456,65 @@ test('http-api: query returns 429 when maxInflightQueries exceeded', async (t) =
   assert.equal(q1r.res.status, 200);
 });
 
+test('http-api: aborted client query releases inflight slot', async (t) => {
+  let activeSignal = null;
+  const controller = {
+    runExclusive: async (fn) => await fn(),
+    query: async ({ prompt, signal }) => {
+      if (prompt === 'retry') return { text: 'ok', codeBlocks: [], meta: {} };
+      activeSignal = signal || null;
+      await new Promise((resolve, reject) => {
+        const onAbort = () => {
+          activeSignal?.removeEventListener?.('abort', onAbort);
+          const err = new Error('request_aborted');
+          err.data = { reason: 'client_disconnect' };
+          reject(err);
+        };
+        if (activeSignal?.aborted) return onAbort();
+        activeSignal?.addEventListener?.('abort', onAbort, { once: true });
+      });
+      return { text: 'never' };
+    }
+  };
+  const tabs = {
+    listTabs: () => [{ id: 't0', key: 'default' }],
+    ensureTab: async () => 't0',
+    createTab: async () => 't0',
+    closeTab: async () => true,
+    getControllerById: () => controller
+  };
+  const server = await startHttpApi({
+    port: 0,
+    token: 'secret',
+    tabs,
+    defaultTabId: 't0',
+    serverId: 'sid-test',
+    stateDir: '/tmp',
+    getStatus: async () => ({ ok: true }),
+    getSettings: async () => ({ maxInflightQueries: 1, maxQueriesPerMinute: 999, minTabGapMs: 0, minGlobalGapMs: 0, showTabsByDefault: false })
+  });
+  t.after(() => server.close());
+  const port = server.address().port;
+
+  const abortController = new AbortController();
+  const pending = fetch(`http://127.0.0.1:${port}/query`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer secret' },
+    body: JSON.stringify({ prompt: 'hang' }),
+    signal: abortController.signal
+  });
+
+  for (let i = 0; i < 50 && !activeSignal; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(activeSignal, 'expected server to pass an abort signal into controller.query');
+
+  abortController.abort();
+  await assert.rejects(pending, (err) => err?.name === 'AbortError');
+
+  const retry = await req({ port, token: 'secret', method: 'POST', pth: '/query', body: { prompt: 'retry' } });
+  assert.equal(retry.res.status, 200);
+  assert.equal(retry.data.ok, true);
+});
+
 test('http-api: query pacing returns 429 with retryAfterMs when max wait is 0', async (t) => {
   let calls = 0;
   const controller = {

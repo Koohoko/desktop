@@ -44,13 +44,14 @@ async function validateConn({ conn, fetchImpl }) {
   return { ok: true, serverId: healthData?.serverId || null };
 }
 
-export async function requestJson({ baseUrl, token, method, path: pth, body, fetchImpl = fetch }) {
+export async function requestJson({ baseUrl, token, method, path: pth, body, signal, fetchImpl = fetch }) {
   const res = await fetchImpl(`${baseUrl}${pth}`, {
     method,
     headers: {
       'content-type': 'application/json',
       authorization: `Bearer ${token}`
     },
+    signal,
     body: body ? JSON.stringify(body) : undefined
   });
   const data = await res.json().catch(() => ({}));
