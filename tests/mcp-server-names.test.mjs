@@ -17,3 +17,7 @@ test('mcp-server registers agentify_* tools only', async () => {
   assert.ok(!src.includes('registerToolWithAliases'), 'should not contain alias helper');
 });
 
+test('mcp-server documents model label in agentify_status', async () => {
+  const src = await fs.readFile(path.join(__dirname, '..', 'mcp-server.mjs'), 'utf8');
+  assert.match(src, /model label/i);
+});

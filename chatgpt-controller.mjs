@@ -422,6 +422,8 @@ export class ChatGPTController {
           return r.width > 0 && r.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
         };
         const stopVisible = Array.from(document.querySelectorAll(${stopSel})).some(visible);
+        const send = Array.from(document.querySelectorAll(${sendSel})).find(visible);
+        const sendDisabled = !!send && (!!send.disabled || String(send.getAttribute('aria-disabled') || '').toLowerCase() === 'true');
         const promptCandidates = Array.from(document.querySelectorAll(${promptSel}));
         const fallback = Array.from(document.querySelectorAll('main textarea, main [role=\"textbox\"], main [contenteditable=\"true\"], textarea, [role=\"textbox\"], [contenteditable=\"true\"]'));
         const uniq = [];
@@ -442,10 +444,10 @@ export class ChatGPTController {
             promptLen = Math.max(promptLen, String(n.innerText || n.textContent || '').trim().length);
           }
         }
-        return { stopVisible, promptLen };
+        return { stopVisible, sendDisabled, promptLen };
       })()`);
 
-      if (snap?.stopVisible || snap?.promptLen === 0) return true;
+      if (snap?.stopVisible || snap?.sendDisabled || snap?.promptLen === 0) return true;
       await sleep(pollMs);
     }
     return false;
@@ -634,6 +636,8 @@ export class ChatGPTController {
     let lastChange = Date.now();
     let stopGoneAt = null;
     let continueClicks = 0;
+    let baseline = null;
+    let sawGenerationLifecycle = false;
 
     while (Date.now() - start < timeoutMs) {
       const snap = await this.#eval(`(() => {
@@ -646,8 +650,10 @@ export class ChatGPTController {
         const sendEnabled = send ? !send.disabled : true;
         const nodes = Array.from(document.querySelectorAll(${assistantSel}));
         const lastNode = nodes[nodes.length - 1];
-        const fallbackMainText = ((document.querySelector('main') || document.body)?.innerText || '').trim();
-        const txt = (lastNode?.innerText || fallbackMainText).trim();
+        const hasAssistantNodes = nodes.length > 0;
+        const assistantTxt = String(lastNode?.innerText || '').trim();
+        const pageTxt = String((document.querySelector('main') || document.body)?.innerText || '').trim();
+        const txt = (assistantTxt || pageTxt).trim();
         const hasContinue = Array.from(document.querySelectorAll('button, a')).some(b => /continue generating/i.test((b.textContent||'').trim()));
         const hasRegenerate = Array.from(document.querySelectorAll('button, a')).some(b => /regenerate/i.test((b.textContent||'').trim()));
         const hasError = /something went wrong|try again|error/i.test(txt) && txt.length < 500;
@@ -662,9 +668,11 @@ export class ChatGPTController {
         return {
           stop,
           sendEnabled,
+          assistantTxt,
+          pageTxt,
           txt,
           count: nodes.length,
-          usedFallback: !lastNode,
+          usedFallback: !hasAssistantNodes,
           hasError,
           hasContinue,
           hasRegenerate,
@@ -674,7 +682,16 @@ export class ChatGPTController {
         };
       })()`);
 
+      const assistantTxt = String(snap?.assistantTxt || '');
+      const pageTxt = String(snap?.pageTxt || '');
       const txt = String(snap?.txt || '');
+      if (!baseline) {
+        baseline = {
+          count: Number(snap?.count || 0),
+          assistantTxt,
+          pageTxt
+        };
+      }
       if (txt !== last) {
         last = txt;
         lastChange = Date.now();
@@ -683,8 +700,12 @@ export class ChatGPTController {
       // Some providers expose unrelated visible "stop/cancel" controls.
       // Treat "generating" as stop-visible only when send is not enabled.
       const generating = !!snap?.stop && !snap?.sendEnabled;
-      if (generating) stopGoneAt = null;
+      if (generating) {
+        sawGenerationLifecycle = true;
+        stopGoneAt = null;
+      }
       else if (stopGoneAt == null) stopGoneAt = Date.now();
+      if (snap?.hasContinue || snap?.hasRegenerate) sawGenerationLifecycle = true;
 
       const dynamicStableMs = Math.max(stableMs, txt.length > 8000 ? 3000 : txt.length > 2000 ? 2200 : stableMs);
       const stable = Date.now() - lastChange >= dynamicStableMs;
@@ -700,8 +721,17 @@ export class ChatGPTController {
         continue;
       }
 
-      const readyByNodes = (snap?.count || 0) > 0;
-      const done = !generating && stopGoneLongEnough && snap?.sendEnabled && stable && txt.length > 0 && readyByNodes;
+      const baselineCount = Number(baseline?.count || 0);
+      const baselineAssistantTxt = String(baseline?.assistantTxt || '');
+      const baselinePageTxt = String(baseline?.pageTxt || '');
+      const assistantAdvanced = ((snap?.count || 0) > baselineCount) || (!!assistantTxt && assistantTxt !== baselineAssistantTxt);
+      const pageAdvanced =
+        !!pageTxt &&
+        pageTxt !== baselinePageTxt &&
+        (pageTxt.includes(baselinePageTxt) || pageTxt.length > baselinePageTxt.length + 24);
+      const readyByNodes = (snap?.count || 0) > 0 && assistantAdvanced;
+      const readyByFallback = !readyByNodes && sawGenerationLifecycle && pageAdvanced;
+      const done = !generating && stopGoneLongEnough && snap?.sendEnabled && stable && txt.length > 0 && (readyByNodes || readyByFallback);
       if (done) {
         const extra = await this.#eval(`(() => {
           const nodes = Array.from(document.querySelectorAll(${assistantSel}));
@@ -750,11 +780,13 @@ export class ChatGPTController {
     if (typeof prompt !== 'string' || !prompt.trim()) throw new Error('missing_prompt');
     if (prompt.length > 200_000) throw new Error('prompt_too_large');
 
-    await this.ensureReady({ timeoutMs });
-    await this.#attachFiles(attachments);
-    await this.#typePrompt(prompt);
-    await this.#clickSend();
-    return await this.#waitForAssistantStable({ timeoutMs: Math.min(timeoutMs, 8 * 60_000) });
+    return await this.mutex.run(async () => {
+      await this.ensureReady({ timeoutMs });
+      await this.#attachFiles(attachments);
+      await this.#typePrompt(prompt);
+      await this.#clickSend();
+      return await this.#waitForAssistantStable({ timeoutMs: Math.min(timeoutMs, 8 * 60_000) });
+    });
   }
 
   async send({ text, timeoutMs = 3 * 60_000, stopAfterSend = false } = {}) {

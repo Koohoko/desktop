@@ -137,7 +137,7 @@ registerTool(
 
 registerTool(
   'agentify_status',
-  { description: 'Get current URL and blocked/ready status for the Agentify Desktop window.', inputSchema: { tabId: z.string().optional() } },
+  { description: 'Get current URL, blocked/ready state, and visible model label for the Agentify Desktop window.', inputSchema: { tabId: z.string().optional() } },
   async ({ tabId }) => {
     const conn = await getConn();
     const path = tabId ? `/status?tabId=${encodeURIComponent(tabId)}` : '/status';
